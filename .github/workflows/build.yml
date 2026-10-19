@@ -45,14 +45,37 @@ jobs:
           set -eo pipefail
           {
             echo ANDROID_HOME=$ANDROID_HOME
-            echo ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT
-            SM=$(command -v sdkmanager || true)
-            if [ -z "$SM" ] && [ -f "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then SM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"; fi
-            if [ -z "$SM" ]; then SM=$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -1); fi
-            echo sdkmanager=$SM
-            test -n "$SM"
+            SM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+            echo step1_accept_licenses
             yes | "$SM" --licenses > /dev/null 2>&1 || true
-            "$SM" "platforms;android-37" "build-tools;37.0.0"
+            echo step2_install_platform
+            "$SM" "platforms;android-37" || echo INSTALL_PLATFORM_FAILED
+            echo step3_check
+            if [ -d "$ANDROID_HOME/platforms/android-37" ]; then
+              echo PLATFORM_OK
+            else
+              echo step4_update_cmdline_tools
+              cd /tmp
+              XML=""
+              for m in repository2-3.xml repository2-1.xml; do
+                XML=$(curl -fsSL "https://dl.google.com/android/repository/$m" || true)
+                if [ -n "$XML" ]; then echo manifest=$m; break; fi
+              done
+              F=$(printf '%s' "$XML" | grep -o 'commandlinetools-linux-[0-9]*_latest\.zip' | head -1 || true)
+              echo clt_file=$F
+              test -n "$F"
+              curl -fsSL -o clt.zip "https://dl.google.com/android/repository/$F"
+              rm -rf /tmp/clt && mkdir -p /tmp/clt
+              unzip -q clt.zip -d /tmp/clt
+              NEW=/tmp/clt/cmdline-tools/bin/sdkmanager
+              echo new_sdkmanager=$NEW
+              test -x "$NEW"
+              yes | "$NEW" --sdk_root="$ANDROID_HOME" --licenses > /dev/null 2>&1 || true
+              "$NEW" --sdk_root="$ANDROID_HOME" "platforms;android-37"
+              test -d "$ANDROID_HOME/platforms/android-37"
+            fi
+            echo step5_list
+            ls "$ANDROID_HOME/platforms" "$ANDROID_HOME/build-tools" 2>/dev/null || true
           } 2>&1 | tee sdk-setup.log
 
       - name: Cache Gradle
@@ -93,9 +116,9 @@ jobs:
           {
             echo RUN ${{ github.run_number }} attempt ${{ github.run_attempt }}
             echo ==== sdk-setup.log ====
-            tail -100 sdk-setup.log 2>/dev/null || echo none
+            tail -150 sdk-setup.log 2>/dev/null || echo none
             echo ==== build.log ====
-            tail -200 build.log 2>/dev/null || echo none
+            tail -250 build.log 2>/dev/null || echo none
           } > last-error.txt
           rm -rf tmprepo && mkdir tmprepo && cd tmprepo
           git init -q
