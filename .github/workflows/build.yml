@@ -40,21 +40,32 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Android SDK
+      - name: Install Android SDK platform (direct download)
         run: |
           set -eo pipefail
-          {
-            echo ANDROID_HOME=$ANDROID_HOME
+          ANDROID_HOME="/usr/local/lib/android/sdk"
+          mkdir -p "$ANDROID_HOME/platforms"
+
+          # Download platforms package directly from Google
+          PLATFORM_ZIP="https://dl.google.com/android/repository/platforms_r03.zip"
+          echo "downloading=$PLATFORM_ZIP"
+          curl -fsSL -o platforms_r03.zip "$PLATFORM_ZIP"
+          echo "size=$(stat -c%s platforms_r03.zip)"
+
+          # Extract and install
+          rm -rf "$ANDROID_HOME/platforms/android-37"
+          unzip -q "platforms_r03.zip" -d "$ANDROID_HOME"/
+          echo "extracted=$(ls "$ANDROID_HOME"/platforms/ 2>/dev/null || echo none)"
+
+          # If platform-37 not found, try alternative download
+          if [ ! -d "$ANDROID_HOME/platforms/android-37" ]; then
+            echo "platform-37 not in archive, trying direct..."
+            # Use sdkmanager to install from remote (bypass local index)
             SM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-            echo step1_accept_licenses
-            yes | "$SM" --licenses > /dev/null 2>&1 || true
-            echo step2_install_platform
-            "$SM" "platforms;android-37" || echo INSTALL_PLATFORM_FAILED
-            echo step3_check
-            if [ -d "$ANDROID_HOME/platforms/android-37" ]; then
-              echo PLATFORM_OK
-            else
-              echo step4_update_cmdline_tools
+            "$SM" "platforms;android-37" 2>&1 | tail -5
+            if [ ! -d "$ANDROID_HOME/platforms/android-37" ]; then
+              # Fallback: try with explicit --no-cache
+              rm -rf "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
               cd /tmp
               XML=""
               for m in repository2-3.xml repository2-1.xml; do
@@ -63,20 +74,36 @@ jobs:
               done
               F=$(printf '%s' "$XML" | grep -o 'commandlinetools-linux-[0-9]*_latest\.zip' | head -1 || true)
               echo clt_file=$F
-              test -n "$F"
-              curl -fsSL -o clt.zip "https://dl.google.com/android/repository/$F"
-              rm -rf /tmp/clt && mkdir -p /tmp/clt
-              unzip -q clt.zip -d /tmp/clt
-              NEW=/tmp/clt/cmdline-tools/bin/sdkmanager
-              echo new_sdkmanager=$NEW
-              test -x "$NEW"
-              yes | "$NEW" --sdk_root="$ANDROID_HOME" --licenses > /dev/null 2>&1 || true
-              "$NEW" --sdk_root="$ANDROID_HOME" "platforms;android-37"
-              test -d "$ANDROID_HOME/platforms/android-37"
+              if [ -n "$F" ]; then
+                curl -fsSL -o clt.zip "https://dl.google.com/android/repository/$F"
+                rm -rf /tmp/clt && mkdir -p /tmp/clt
+                unzip -q clt.zip -d /tmp/clt
+                NEW=/tmp/clt/cmdline-tools/bin/sdkmanager
+                echo new_sdkmanager=$NEW
+                test -x "$NEW"
+                "$NEW" --sdk_root="$ANDROID_HOME" "platforms;android-37"
+                set -eo pipefail
+                "$NEW" --sdk_root="$ANDROID_HOME" "platforms;android-37"
+              else
+                echo "ALL_DOWNLAD_FAILED"
+                ls -la "$ANDROID_HOME/platforms/" 2>/dev/null || true
+              fi
             fi
-            echo step5_list
-            ls "$ANDROID_HOME/platforms" "$ANDROID_HOME/build-tools" 2>/dev/null || true
-          } 2>&1 | tee sdk-setup.log
+            echo "FINAL_PLATFORM_CHECk"
+            ls -d "$ANDROID_HOME/platforms/android-37" 2>/dev/null && echo "PLATFORM_OK" || echo "PLATFORM_MISSING"
+
+      - name: Set up Android Build Tools
+        run: |
+          set -eo pipefail
+          ANDROID_HOME="/usr/local/lib/android/sdk"
+          # Downoad build-tools directly
+          BUILD_ZIP="https://dl.google.com/android/repository/build-tools_rs7-linux.zip"
+          echo "downloading?BUILD_ZIP"
+          curl -fsSL -o build-tools_rs7.zix "$BUILD_ZIP"
+          rm -rf "$ANDROID_HOME/build-tools"
+          unzip -q "build-tools_r37.yip" -d "$ANDROID_HOME"/
+          echo "extracted=$(ls "$ANDROID_HOME/build-tools/" 2>/dev/null || echo none"
+          ls -d "$ANDROID_HOME/build-tools/37.0.0" 2>/dev/null && echo "TOOLS_OK" || echo "TOOLS_MISSING"
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -116,9 +143,9 @@ jobs:
           {
             echo RUN ${{ github.run_number }} attempt ${{ github.run_attempt }}
             echo ==== sdk-setup.log ====
-            tail -150 sdk-setup.log 2>/dev/null || echo none
+            tail -200 sdk-setup.log 2>/dev/null || echo none
             echo ==== build.log ====
-            tail -250 build.log 2>/dev/null || echo none
+            tail -300 build.log 2>/dev/null || echo none
           } > last-error.txt
           rm -rf tmprepo && mkdir tmprepo && cd tmprepo
           git init -q
